@@ -1,0 +1,89 @@
+# ==========================================
+# 1. Environment Variables (KRUSIAL)
+# ==========================================
+.env
+*.env
+.env.local
+.env.*.local
+
+# ==========================================
+# 2. AI Service (Python/FastAPI/Flask)
+# ==========================================
+ai/__pycache__/
+ai/*.py[cod]
+ai/*.so
+ai/.Python
+ai/env/
+ai/venv/
+ai/.venv/
+ai/build/
+ai/dist/
+
+# Jupyter Notebook checkpoints
+ai/.ipynb_checkpoints/
+
+# ==========================================
+# 3. Backend (Golang)
+# ==========================================
+# Binary executable
+backend/main
+backend/backend
+backend/*.exe
+backend/*.exe~
+backend/*.dll
+backend/*.so
+backend/*.dylib
+
+# Test binary
+backend/*.test
+
+# Output folder
+backend/bin/
+backend/dist/
+
+# ==========================================
+# 4. Frontend (Node.js/Next.js/React)
+# ==========================================
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+frontend/.cache/
+
+# Logs
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# ==========================================
+# 5. RAG Specific (Data & Vector DB)
+# ==========================================
+# Jangan upload dokumen sumber atau DB lokal yang berat
+data/
+*.pdf
+*.txt
+*.csv
+*.json
+*.db
+*.sqlite3
+
+# Folder storage Vector DB (contoh: ChromaDB/Qdrant)
+ai/chroma_db/
+ai/vector_storage/
+
+# ==========================================
+# 6. OS & IDEs
+# ==========================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==========================================
+# 7. Docker
+# ==========================================
+# Abaikan folder data yang di-mount oleh Docker
+docker-data/
