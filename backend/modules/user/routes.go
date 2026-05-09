@@ -8,10 +8,11 @@ import (
 )
 
 func RegisterUserRoutes(r *gin.RouterGroup, ctrl *controller.UserController, jwtSvc *authService.JWTService) {
-	users := r.Group("/users")
+	users := r.Group("/user")
 	{
-		users.POST("", ctrl.CreateUser)                                         // POST /api/users
-		users.GET("", middlewares.Authentication(jwtSvc), ctrl.GetAllUsers)     // GET  /api/users (protected)
-		users.GET("/:id", middlewares.Authentication(jwtSvc), ctrl.GetUserByID) // GET  /api/users/:id (protected)
+		users.GET("/me", middlewares.Authentication(jwtSvc), ctrl.GetMe)
+		users.PUT("/profile", middlewares.Authentication(jwtSvc), ctrl.UpdateProfile)
+
 	}
+
 }
