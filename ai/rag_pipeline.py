@@ -1,11 +1,13 @@
 import os
 import tempfile
 import chromadb
+from typing import List, Dict, Any, Optional
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
 
 COLLECTION_NAME = "documents"
+RELEVANCE_THRESHOLD = 0.3  # Set lower to be safe initially
 
 _model: SentenceTransformer | None = None
 _client = None
@@ -32,7 +34,7 @@ def has_documents() -> bool:
     return _get_collection().count() > 0
 
 
-def process_pdf(file_bytes: bytes) -> int:
+def process_pdf(file_bytes: bytes, source_name: str = "Unknown") -> int:
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
@@ -41,7 +43,7 @@ def process_pdf(file_bytes: bytes) -> int:
         loader = PyPDFLoader(tmp_path)
         pages = loader.load()
 
-        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
         chunks = splitter.split_documents(pages)
 
         texts = [c.page_content for c in chunks if c.page_content.strip()]
@@ -50,14 +52,15 @@ def process_pdf(file_bytes: bytes) -> int:
 
         embeddings = _get_model().encode(texts).tolist()
         ids = [f"chunk_{abs(hash(text + str(i)))}" for i, text in enumerate(texts)]
+        metadatas = [{"source": source_name} for _ in texts]
 
-        _get_collection().add(documents=texts, embeddings=embeddings, ids=ids)
+        _get_collection().add(documents=texts, embeddings=embeddings, ids=ids, metadatas=metadatas)
         return len(texts)
     finally:
         os.unlink(tmp_path)
 
 
-def retrieve(query: str, top_k: int = 3) -> str:
+def retrieve(query: str, top_k: int = 5) -> str:
     collection = _get_collection()
     if collection.count() == 0:
         return ""
@@ -67,4 +70,22 @@ def retrieve(query: str, top_k: int = 3) -> str:
     results = collection.query(query_embeddings=query_embedding, n_results=n)
 
     chunks = results["documents"][0]
-    return "\n\n".join(chunks)
+    metadatas = results["metadatas"][0] if results["metadatas"] else [{}] * len(chunks)
+    distances = results["distances"][0] if results["distances"] else [0.0] * len(chunks)
+    
+    formatted_results = []
+    for doc, meta, dist in zip(chunks, metadatas, distances):
+        # Score = 1 / (1 + distance) for L2
+        score = 1 / (1 + dist)
+        
+        if score < RELEVANCE_THRESHOLD:
+            continue
+            
+        safe_meta = meta if meta is not None else {}
+        source = safe_meta.get("source", "Unknown")
+        formatted_results.append(f"[Sumber: {source}] [Relevansi: {score:.2f}]: {doc}")
+        
+    if not formatted_results:
+        return "Tidak ditemukan data yang cukup relevan di Panduan Gizi."
+        
+    return "\n\n".join(formatted_results)
