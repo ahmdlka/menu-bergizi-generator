@@ -21,7 +21,7 @@ Final Project pada kali ini kami bawakan dengan tema **Makan Bergizi Generator**
 
 ## Latar Belakang
 
-Tema **Makan Bergizi Generator** kami pilih karena beberapa pertimbangan. Yang paling utama adalah karena tema ini sangat *relate* dan dekat dengan keseharian kita, khususnya sebagai mahasiswa yang sering kali kebingungan dalam menentukan menu makanan yang sesuai dengan kebutuhan, kondisi tubuh, dan juga budget yang tersedia. Selain itu, isu mengenai gizi dan pola makan sehat sedang menjadi perhatian banyak orang, sehingga kami merasa project ini bisa memberikan kontribusi yang nyata, meskipun dalam skala kecil.
+Tema **Menu Bergizi Generator** kami pilih karena beberapa pertimbangan. Yang paling utama adalah karena tema ini sangat *relate* dan dekat dengan keseharian kita, khususnya sebagai mahasiswa yang sering kali kebingungan dalam menentukan menu makanan yang sesuai dengan kebutuhan, kondisi tubuh, dan juga budget yang tersedia. Selain itu, isu mengenai gizi dan pola makan sehat sedang menjadi perhatian banyak orang, sehingga kami merasa project ini bisa memberikan kontribusi yang nyata, meskipun dalam skala kecil.
 
 Project ini juga kami buat untuk memenuhi ketentuan final project yang mengharuskan integrasi tiga komponen utama, yaitu **Frontend, Backend, dan AI**, sehingga sangat cocok dengan ide rekomendasi menu yang membutuhkan ketiga komponen tersebut secara simultan.
 
@@ -360,7 +360,7 @@ Alur RAG yang kami gunakan secara sederhana:
 
 Project ini dikerjakan oleh tim yang terdiri dari:
 
-- **Ahmad Loka A.** - 5025241xxx
+- **Ahmad Loka A.** - 5025241044
 - **Naufal Bintang Brillian** - 5025241168
 
 
