@@ -11,23 +11,23 @@ import { MealPlanProvider } from "./lib/mealPlanStore";
 export default function App() {
   return (
     <BrowserRouter>
-      <MealPlanProvider>
-        <Routes>
-          <Route path="/" element={<LandingPage />} />
-          <Route path="/login" element={<AuthPage />} />
-          <Route
-            element={
-              <RequireAuth>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/login" element={<AuthPage />} />
+        <Route
+          element={
+            <RequireAuth>
+              <MealPlanProvider>
                 <AppShell />
-              </RequireAuth>
-            }
-          >
-            <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/profile" element={<ProfilePage />} />
-            <Route path="/complete-profile" element={<CompleteProfilePage />} />
-          </Route>
-        </Routes>
-      </MealPlanProvider>
+              </MealPlanProvider>
+            </RequireAuth>
+          }
+        >
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/complete-profile" element={<CompleteProfilePage />} />
+        </Route>
+      </Routes>
     </BrowserRouter>
   );
 }
