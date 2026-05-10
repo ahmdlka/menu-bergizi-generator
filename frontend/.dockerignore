@@ -1,0 +1,11 @@
+.env
+*.env
+.env.local
+.git
+node_modules/
+dist/
+.cache/
+*.log
+Dockerfile*
+nginx.conf
+README.md

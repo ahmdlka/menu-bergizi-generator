@@ -22,7 +22,7 @@ func NewRAGClient() *RAGClient {
 	}
 	return &RAGClient{
 		BaseURL:    url,
-		HTTPClient: &http.Client{Timeout: 90 * time.Second},
+		HTTPClient: &http.Client{Timeout: 300 * time.Second},
 	}
 }
 

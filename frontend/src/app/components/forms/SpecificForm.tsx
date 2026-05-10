@@ -39,7 +39,7 @@ const initial: FormState = {
   food_preferences: "",
   exclude_ingredients: "",
   budget_per_day: "",
-  duration_days: 7,
+  duration_days: 1,
   prefer_local_food: true,
 };
 
@@ -228,16 +228,15 @@ export function SpecificForm({ onBack, onSubmit, submitting }: Props) {
                 placeholder="30000"
               />
             </Field>
-            <Field label="Durasi (hari)" hint="1–30 hari">
-              <Input
-                type="number"
-                min={1}
-                max={30}
-                value={data.duration_days}
-                onChange={(e) =>
-                  set("duration_days", Math.min(30, Math.max(1, Number(e.target.value) || 1)))
-                }
-              />
+            <Field label="Durasi (hari)" hint="Pilih 1, 2, atau 3 hari">
+              <Select
+                value={String(data.duration_days)}
+                onChange={(e) => set("duration_days", Number(e.target.value))}
+              >
+                <option value="1">1 hari</option>
+                <option value="2">2 hari</option>
+                <option value="3">3 hari</option>
+              </Select>
             </Field>
             <Field label="Prioritaskan makanan lokal">
               <label className="flex items-center gap-2 h-10">

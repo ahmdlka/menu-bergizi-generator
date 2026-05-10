@@ -16,30 +16,72 @@ from rag_pipeline import process_pdf, retrieve, has_documents
 
 load_dotenv()
 
+# --- Configuration ---
+# Define the directory to scan for initial PDFs.
+# This directory should contain the PDF files you want to embed on startup.
+# You may need to create this directory and place your PDF files inside.
+# The RAG pipeline will then process all '.pdf' files found here.
+# --- PLEASE CONFIRM THIS PATH OR PROVIDE YOUR PREFERRED DIRECTORY ---
+PDF_DIRECTORY_TO_SCAN = "data/pdf_files"
+
 # ---------------------------------------------------------------------------
-# OPTIMASI 1: Singleton httpx.AsyncClient dengan connection pooling
-#
-# Sebelumnya: `async with httpx.AsyncClient(timeout=90.0) as client:` dibuat
-# ulang di setiap request → TCP handshake baru setiap kali, overhead tinggi.
-#
-# Sesudahnya: satu client yang hidup sepanjang umur aplikasi, dengan batas
-# koneksi eksplisit (limits) agar tidak bocor resource.
+# Singleton httpx.AsyncClient dengan connection pooling
 # ---------------------------------------------------------------------------
 _http_client: httpx.AsyncClient | None = None
 
+async def scan_and_embed_directory(directory_path: str):
+    """
+    Scans a directory for PDF files and processes each one.
+    Clears the RAG cache afterwards.
+    """
+    print(f"Attempting to scan directory: {directory_path} for PDF files...")
+    if not os.path.isdir(directory_path):
+        print(f"Warning: Directory '{directory_path}' not found. Skipping initial scan.")
+        return
+
+    found_pdfs = False
+    for filename in os.listdir(directory_path):
+        if filename.lower().endswith(".pdf"):
+            found_pdfs = True
+            file_path = os.path.join(directory_path, filename)
+            print(f"Processing PDF for embedding: {filename}")
+            try:
+                with open(file_path, "rb") as f:
+                    file_bytes = f.read()
+                # process_pdf is assumed to handle embedding into ChromaDB
+                # It's called with asyncio.to_thread in the original upload endpoint.
+                await asyncio.to_thread(process_pdf, file_bytes, filename)
+                print(f"Successfully processed and embedded: {filename}")
+                # Clear cache after each successful embedding, mirroring the upload endpoint behavior.
+                _cached_retrieve.cache_clear()
+            except Exception as e:
+                print(f"Error processing {filename}: {e}")
+
+    if not found_pdfs:
+        print(f"No PDF files found in '{directory_path}'.")
+    # If files were found and processed, the cache was cleared inside the loop.
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Inisialisasi resource satu kali saat startup, bersihkan saat shutdown."""
     global _http_client
     _http_client = httpx.AsyncClient(
-        timeout=90.0,
+        timeout=300.0,
         limits=httpx.Limits(
             max_connections=20,
             max_keepalive_connections=10,
             keepalive_expiry=30,
         ),
     )
-    yield
+
+    # --- Initial PDF Scan on Startup ---
+    # This logic will run when the FastAPI application starts.
+    # It scans the configured directory for PDF files and embeds them.
+    await scan_and_embed_directory(PDF_DIRECTORY_TO_SCAN)
+
+    yield # Application starts here
+
+    # --- Cleanup ---
     await _http_client.aclose()
 
 app = FastAPI(title="MBG - Menu Bergizi Generator RAG Service", lifespan=lifespan)
@@ -59,19 +101,12 @@ GEMINI_URL     = (
     f"/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
 )
 
-# ---------------------------------------------------------------------------
-# OPTIMASI 2: Pre-compile regex
-#
-# Sebelumnya: re.sub(r"```json...") dikompilasi ulang setiap kali fungsi
-# dipanggil karena Python tidak meng-cache pola secara eksplisit.
-#
-# Sesudahnya: compile sekali di module-level → lookup O(1) per panggilan.
-# ---------------------------------------------------------------------------
+# Pre-compiled regex
 _RE_JSON_FENCE_OPEN  = re.compile(r"```json\s*")
 _RE_JSON_FENCE_CLOSE = re.compile(r"\s*```")
 
 
-# --- Models (tidak berubah) ---
+# --- Models ---
 
 class UserProfile(BaseModel):
     age: int
@@ -86,7 +121,9 @@ class UserProfile(BaseModel):
 
 class Constraints(BaseModel):
     duration_days: int = 1
-    budget_per_day: float
+    # budget_per_day sekarang opsional. Jika None / 0, AI tetap wajib
+    # memperkirakan harga realistis untuk setiap bahan berdasarkan pasar Indonesia.
+    budget_per_day: Optional[float] = None
     exclude_ingredients: List[str] = []
     prefer_local_food: bool = True
 
@@ -102,7 +139,7 @@ class Ingredient(BaseModel):
     protein: float
     carbs: float
     fat: float
-    price_estimate: float
+    price_estimate: float   # WAJIB — harga dalam Rupiah (IDR)
 
 class Meal(BaseModel):
     type: str
@@ -139,7 +176,6 @@ class ChatRequest(BaseModel):
 # --- Utilities ---
 
 def safe_parse_json(text: str) -> Dict[str, Any]:
-    # Gunakan regex yang sudah pre-compiled
     text = _RE_JSON_FENCE_OPEN.sub("", text)
     text = _RE_JSON_FENCE_CLOSE.sub("", text)
     text = text.strip()
@@ -179,9 +215,6 @@ async def call_gemini(prompt: str, is_json: bool = True) -> str:
     if is_json:
         payload["generationConfig"]["response_mime_type"] = "application/json"
 
-    # ---------------------------------------------------------------------------
-    # OPTIMASI 1 (lanjutan): Gunakan _http_client singleton, bukan buat baru.
-    # ---------------------------------------------------------------------------
     try:
         response = await _http_client.post(GEMINI_URL, json=payload)
         response.raise_for_status()
@@ -191,7 +224,27 @@ async def call_gemini(prompt: str, is_json: bool = True) -> str:
         raise HTTPException(status_code=500, detail=f"Gemini API Error: {str(e)}")
 
 
-# --- Persona & Prompts ---
+def _build_budget_instruction(budget_per_day: Optional[float]) -> str:
+    """
+    Mengembalikan instruksi budget untuk disertakan dalam prompt.
+    Jika budget tidak diberikan, AI tetap WAJIB memperkirakan harga
+    realistis berdasarkan harga pasar Indonesia.
+    """
+    if budget_per_day and budget_per_day > 0:
+        return (
+            f"Budget harian yang tersedia: Rp{budget_per_day:,.0f}. "
+            f"Usahakan total pengeluaran per hari tidak melebihi budget ini."
+        )
+    return (
+        "Tidak ada budget spesifik yang ditetapkan. "
+        "Perkirakan harga setiap bahan makanan berdasarkan harga pasar Indonesia yang wajar "
+        "(misalnya: beras 100g ≈ Rp1.500, ayam 100g ≈ Rp5.000, tempe 100g ≈ Rp2.000, "
+        "bayam 100g ≈ Rp1.000, telur 1 butir ≈ Rp2.500). "
+        "Tetap isi field price_estimate untuk SETIAP bahan dan budget_estimate untuk SETIAP meal."
+    )
+
+
+# --- Persona ---
 
 PERSONA = """
 Anda adalah seorang Ahli Gizi Profesional yang ahli dalam menyusun rencana menu sehat (Menu Bergizi Gratis / MBG style).
@@ -201,44 +254,26 @@ Karakteristik Anda:
 3. Mengutamakan bahan makanan lokal Indonesia yang mudah ditemukan dan terjangkau (seperti tempe, tahu, ikan kembung, sayur bayam, dll).
 4. Menghitung kebutuhan kalori dan makronutrien (Karbohidrat, Protein, Lemak) secara presisi berdasarkan profil biodata (Usia, Berat, Tinggi, Gender, Aktivitas).
 
-Tugas Anda adalah memberikan rekomendasi yang akurat, aman (memperhatikan alergi dan penyakit), dan sesuai dengan budget yang diberikan. Jika tidak ada budget yang diberikan tetap hitung estimasi budget dari meal plan.
+Tugas Anda adalah memberikan rekomendasi yang akurat, aman (memperhatikan alergi dan penyakit), dan sesuai dengan budget yang diberikan.
+ATURAN HARGA: Untuk SETIAP bahan makanan dalam SETIAP menu, SELALU isi field price_estimate dalam Rupiah (IDR).
+Jika tidak ada budget yang ditetapkan, perkirakan harga pasar yang realistis di Indonesia. JANGAN biarkan price_estimate bernilai 0 atau null.
 """
 
-# ---------------------------------------------------------------------------
-# OPTIMASI 3: Cache hasil RAG retrieval untuk query yang identik
-#
-# Sebelumnya: setiap request memanggil `retrieve()` ke vector store meskipun
-# query-nya sama persis (e.g., endpoint /ask dipanggil berulang).
-#
-# Sesudahnya: lru_cache(maxsize=128) menyimpan 128 query terakhir. Karena
-# `retrieve` sinkronus, cache ini aman di-apply langsung pada wrapper-nya.
-# Jika corpus PDF sering berganti, panggil `_cached_retrieve.cache_clear()`.
-# ---------------------------------------------------------------------------
+
 @lru_cache(maxsize=128)
 def _cached_retrieve(query: str, top_k: int = 5) -> str:
     return retrieve(query, top_k=top_k)
 
 
-# ---------------------------------------------------------------------------
-# OPTIMASI 4: Jalankan RAG retrieval di thread pool, bukan di event loop
-#
-# Sebelumnya: `retrieve(...)` (sinkronus, CPU/IO-bound) dipanggil langsung
-# di dalam coroutine → memblokir seluruh event loop selama proses berlangsung,
-# membuat request lain harus menunggu.
-#
-# Sesudahnya: `asyncio.to_thread` mendelegasikan pekerjaan ke thread pool
-# bawaan Python, sehingga event loop tetap bebas melayani request lain.
-# ---------------------------------------------------------------------------
 async def build_rag_context(query: str) -> str:
     if not has_documents():
         return ""
     context = await asyncio.to_thread(_cached_retrieve, query, 5)
     if not context:
         return ""
-    return (
-        "\n\nKONTEKS PANDUAN GIZI / DIETARY GUIDELINES "
-        "(Gunakan informasi ini sebagai referensi utama):\n"
-        f"{context}\n"
+    return ("KONTEKS PANDUAN GIZI / DIETARY GUIDELINES "
+        "(Gunakan informasi ini sebagai referensi utama):"
+        f"{context}"
     )
 
 
@@ -259,10 +294,6 @@ async def upload_pdf(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="File harus berformat PDF")
     try:
         file_bytes = await file.read()
-        # ---------------------------------------------------------------------------
-        # OPTIMASI 4 (lanjutan): process_pdf juga sinkronus → pindah ke thread.
-        # Sekaligus clear cache RAG agar dokumen baru langsung terpakai.
-        # ---------------------------------------------------------------------------
         chunk_count = await asyncio.to_thread(process_pdf, file_bytes, file.filename)
         _cached_retrieve.cache_clear()
         return {"message": "PDF berhasil diproses", "chunks": chunk_count}
@@ -280,14 +311,6 @@ async def chat_legacy(request: ChatRequest):
         activity_level="moderate", goal="healthy_eating",
     )
     profile = request.user_profile or default_profile
-
-    # ---------------------------------------------------------------------------
-    # OPTIMASI 5: Hapus dead code (dict literal tanpa assignment yang ada di
-    # versi asli). Tidak ada dampak fungsional, tapi mengurangi bytecode yang
-    # dievaluasi Python di setiap request.
-    # ---------------------------------------------------------------------------
-
-    # OPTIMASI 3+4: gunakan cache + thread untuk RAG
     context = await build_rag_context(request.message)
 
     prompt = f"""
@@ -306,16 +329,25 @@ Berikan jawaban yang edukatif, ramah, dan berbasis data nutrisi. Gunakan referen
 
 @app.post("/rag/generate")
 async def generate_meal_plan(request: GenerateRequest):
-    # ---------------------------------------------------------------------------
-    # OPTIMASI 6: Jalankan RAG dan validasi input secara paralel dengan
-    # asyncio.gather jika ada pra-pemrosesan async lain di masa depan.
-    # Saat ini, RAG adalah satu-satunya I/O sebelum Gemini → langsung await.
-    # ---------------------------------------------------------------------------
     context = await build_rag_context(
         f"Nutrisi untuk {request.user_profile.goal} "
         f"dengan penyakit {request.user_profile.diseases}"
     )
-    print(f"RAG Context for Generate:\n{context}\n")  # Debug log untuk RAG context
+    print(f"RAG Context for Generate: {context}")
+
+    # Instruksi budget yang adaptif — selalu minta harga meski tidak ada budget
+    budget_instruction = _build_budget_instruction(request.constraints.budget_per_day)
+
+    # Daftar bahan yang harus dihindari
+    excluded = request.user_profile.allergies + request.constraints.exclude_ingredients
+    exclude_str = ", ".join(excluded) if excluded else "tidak ada"
+
+    # Instruksi preferensi lokal
+    local_food_str = (
+        "Utamakan bahan makanan lokal Indonesia yang mudah ditemukan di pasar tradisional."
+        if request.constraints.prefer_local_food
+        else "Bahan makanan bebas, lokal maupun impor."
+    )
 
     prompt = f"""
 {PERSONA}
@@ -326,8 +358,26 @@ INSTRUKSI:
 Buatlah rencana menu selama {request.constraints.duration_days} hari untuk profil berikut:
 {request.user_profile.model_dump_json(indent=2)}
 
-Batasan Tambahan:
-{request.constraints.model_dump_json(indent=2)}
+ATURAN BUDGET DAN HARGA:
+{budget_instruction}
+
+ATURAN BAHAN:
+- Hindari bahan berikut: {exclude_str}
+- {local_food_str}
+
+ATURAN KETAT MENGENAI HARGA:
+Setiap objek ingredient WAJIB memiliki field "price_estimate" berisi harga estimasi bahan tersebut
+dalam satuan yang dipakai (gram/ml/butir) dalam Rupiah (IDR). DILARANG mengisi 0 atau null.
+Contoh referensi harga pasar Indonesia:
+- Beras putih 100g → Rp1.500
+- Dada ayam 100g → Rp5.000
+- Tempe 100g → Rp2.000
+- Tahu 100g → Rp1.500
+- Ikan kembung 100g → Rp4.000
+- Bayam 100g → Rp1.000
+- Telur ayam 1 butir (60g) → Rp2.500
+- Minyak goreng 10ml → Rp300
+- Bawang putih 10g → Rp500
 
 Output HARUS berupa JSON murni mengikuti skema berikut:
 {{
@@ -338,44 +388,51 @@ Output HARUS berupa JSON murni mengikuti skema berikut:
         {{
           "type": "breakfast | lunch | dinner | snack",
           "name": "Nama Menu",
-          "budget_estimate": 0,
-          "nutrition_summary": {{ "calories": 0, "protein": 0, "carbs": 0, "fat": 0 }},
+          "budget_estimate": 15000,
+          "nutrition_summary": {{ "calories": 350, "protein": 15, "carbs": 50, "fat": 8 }},
           "ingredients": [
             {{
-              "name": "Bahan",
-              "weight": 0,
+              "name": "Nama Bahan",
+              "weight": 100,
               "unit": "gram",
-              "calories": 0,
-              "protein": 0,
-              "carbs": 0,
-              "fat": 0,
-              "price_estimate": 0
+              "calories": 130,
+              "protein": 5,
+              "carbs": 25,
+              "fat": 1,
+              "price_estimate": 1500
             }}
           ],
           "instructions": ["Langkah 1", "Langkah 2"]
         }}
       ],
-      "daily_total_budget": 0,
-      "daily_nutrition": {{ "total_calories": 0, "total_protein": 0, "total_carbs": 0, "total_fat": 0 }}
+      "daily_total_budget": 45000,
+      "daily_nutrition": {{ "total_calories": 1800, "total_protein": 70, "total_carbs": 220, "total_fat": 55 }}
     }}
   ],
   "nutrition_summary": {{
-    "avg_daily_calories": 0,
-    "avg_protein": 0,
-    "avg_carbs": 0,
-    "avg_fat": 0,
-    "total_estimated_budget": 0
+    "avg_daily_calories": 1800,
+    "avg_protein": 70,
+    "avg_carbs": 220,
+    "avg_fat": 55,
+    "total_estimated_budget": 135000
   }}
 }}
 
 PASTIKAN:
 1. Total kalori harian sesuai dengan panduan gizi seimbang (±10%).
-2. Harga estimasi dari meal plan dalam Rupiah (IDR) yang realistis.
-3. Hindari bahan: {', '.join(request.user_profile.allergies + request.constraints.exclude_ingredients)}.
-4. Bahasa yang digunakan adalah Bahasa Indonesia yang profesional.
+2. SETIAP ingredient memiliki price_estimate > 0 dalam IDR.
+3. budget_estimate setiap meal = jumlah price_estimate semua ingredientnya.
+4. daily_total_budget = jumlah budget_estimate semua meal di hari itu.
+5. total_estimated_budget = jumlah semua daily_total_budget.
+6. Bahasa yang digunakan adalah Bahasa Indonesia yang profesional.
 """
     response_text = await call_gemini(prompt, is_json=True)
-    return safe_parse_json(response_text)
+    result = safe_parse_json(response_text)
+
+    # Post-processing: pastikan tidak ada price_estimate yang 0 atau null
+    result = _ensure_price_estimates(result)
+
+    return result
 
 
 @app.post("/rag/refine")
@@ -392,10 +449,20 @@ Rencana Menu Saat Ini: {request.meal_plan.model_dump_json()}
 Profil User: {request.user_profile.model_dump_json()}
 Instruksi Modifikasi: "{request.instruction}"
 
+ATURAN KETAT:
+- Pertahankan atau perbarui field "price_estimate" untuk SETIAP ingredient dalam IDR.
+- JANGAN biarkan price_estimate bernilai 0 atau null. Perkirakan harga pasar yang wajar.
+- Perbarui budget_estimate setiap meal dan daily_total_budget sesuai bahan yang berubah.
+
 Output HARUS berupa JSON murni dengan skema yang sama seperti input 'meal_plan'.
 """
     response_text = await call_gemini(prompt, is_json=True)
-    return safe_parse_json(response_text)
+    result = safe_parse_json(response_text)
+
+    # Post-processing: pastikan tidak ada price_estimate yang 0 atau null
+    result = _ensure_price_estimates(result)
+
+    return result
 
 
 @app.post("/rag/ask")
@@ -414,6 +481,110 @@ Berikan jawaban yang edukatif, ramah, dan berbasis data nutrisi. Gunakan referen
 """
     response_text = await call_gemini(prompt, is_json=False)
     return PlainTextResponse(content=response_text)
+
+
+# ---------------------------------------------------------------------------
+# Helper: post-processing untuk memastikan price_estimate selalu terisi
+# ---------------------------------------------------------------------------
+
+# Harga acuan per 100g/100ml dalam Rupiah — digunakan sebagai fallback
+_PRICE_FALLBACK_PER_100: Dict[str, float] = {
+    "beras": 1500,
+    "nasi": 1500,
+    "ayam": 5000,
+    "dada ayam": 5000,
+    "ikan": 4000,
+    "ikan kembung": 4000,
+    "ikan lele": 3500,
+    "tempe": 2000,
+    "tahu": 1500,
+    "telur": 4000,        # per 100g ≈ 1.6 butir
+    "bayam": 1000,
+    "kangkung": 1000,
+    "wortel": 1500,
+    "kentang": 2000,
+    "mie": 2500,
+    "roti": 3000,
+    "susu": 2000,
+    "minyak": 3000,
+    "gula": 1500,
+    "garam": 500,
+    "bawang": 5000,
+    "tomat": 2000,
+    "pisang": 3000,
+    "pepaya": 1500,
+    "oat": 4000,
+    "terigu": 1500,
+    "kacang": 4000,
+}
+
+_DEFAULT_PRICE_PER_100 = 2500.0   # fallback jika nama bahan tidak dikenali
+
+
+def _estimate_fallback_price(name: str, weight: float, unit: str) -> float:
+    """
+    Perkirakan harga bahan berdasarkan nama dan berat menggunakan tabel acuan.
+    Mengembalikan harga dalam Rupiah.
+    """
+    name_lower = name.lower()
+    base_per_100 = _DEFAULT_PRICE_PER_100
+    for keyword, price in _PRICE_FALLBACK_PER_100.items():
+        if keyword in name_lower:
+            base_per_100 = price
+            break
+
+    # Normalkan ke 100 unit (gram/ml), unit lain dianggap 1 item ≈ 60g
+    if unit in ("gram", "g", "ml", "l"):
+        ref_weight = weight if unit in ("gram", "g", "ml") else weight * 1000
+    else:
+        # Untuk "butir", "lembar", "buah", dll — anggap 1 unit ≈ 60g
+        ref_weight = weight * 60
+
+    return round((base_per_100 / 100) * ref_weight, 0)
+
+
+def _ensure_price_estimates(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Rekursif memeriksa setiap ingredient dalam struktur meal plan.
+    Jika price_estimate adalah 0, None, atau tidak ada, isi dengan estimasi fallback.
+    Perbarui budget_estimate meal dan daily_total_budget hari.
+    """
+    days = data.get("days", [])
+    for day in days:
+        daily_budget = 0.0
+        for meal in day.get("meals", []):
+            meal_budget = 0.0
+            for ingredient in meal.get("ingredients", []):
+                price = ingredient.get("price_estimate")
+                if not price or price <= 0:
+                    # Isi dengan estimasi fallback
+                    ingredient["price_estimate"] = _estimate_fallback_price(
+                        name=ingredient.get("name", ""),
+                        weight=float(ingredient.get("weight", 100)),
+                        unit=ingredient.get("unit", "gram"),
+                    )
+                meal_budget += ingredient.get("price_estimate", 0)
+
+            # Perbarui budget_estimate meal jika tidak ada atau tidak konsisten
+            existing_meal_budget = meal.get("budget_estimate", 0)
+            if not existing_meal_budget or existing_meal_budget <= 0:
+                meal["budget_estimate"] = round(meal_budget, 0)
+            daily_budget += meal.get("budget_estimate", 0)
+
+        # Perbarui daily_total_budget jika tidak ada atau nol
+        if not day.get("daily_total_budget") or day.get("daily_total_budget", 0) <= 0:
+            day["daily_total_budget"] = round(daily_budget, 0)
+
+    # Perbarui total_estimated_budget di nutrition_summary
+    summary = data.get("nutrition_summary", {})
+    total_budget = sum(
+        day.get("daily_total_budget", 0) for day in days
+    )
+    if not summary.get("total_estimated_budget") or summary.get("total_estimated_budget", 0) <= 0:
+        summary["total_estimated_budget"] = round(total_budget, 0)
+    data["nutrition_summary"] = summary
+
+    return data
 
 
 if __name__ == "__main__":

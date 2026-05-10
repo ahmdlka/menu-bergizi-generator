@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Send, X } from "lucide-react";
 import { Button } from "./ui/Button";
 import { Markdown } from "./Markdown";
-import { chatApi } from "../lib/api";
+import { chatApi, type MealPlan, type MealPlanData } from "../lib/api";
 import { useMealPlan } from "../lib/mealPlanStore";
 
 interface ChatMessage {
@@ -45,8 +45,24 @@ export function ChatPanel({ onClose, hasMealPlan = false }: ChatPanelProps) {
     try {
       const res = await chatApi.send(message, mealPlan?.meal_plan_id ?? null);
       setMessages((m) => [...m, { role: "assistant", text: res.reply }]);
+
       if (res.intent === "REFINE_MENU" && res.updated_meal_plan) {
-        setMealPlan(res.updated_meal_plan);
+        const updated = res.updated_meal_plan as any;
+
+        // Detect whether backend returned a full MealPlan (has meal_plan_id)
+        // or just FullPlanData (only days + nutrition_summary, real backend response).
+        if (updated?.meal_plan_id) {
+          // Mock mode — full MealPlan object returned, use directly
+          setMealPlan(updated as MealPlan);
+        } else if (mealPlan) {
+          // Real backend — only plan data returned; merge with existing MealPlan
+          // so the meta (meal_plan_id, mode, duration_days, is_active) are preserved.
+          setMealPlan({
+            ...mealPlan,
+            plan: updated as MealPlanData,
+            version: res.new_version ?? mealPlan.version + 1,
+          });
+        }
       }
     } catch (err: any) {
       setMessages((m) => [

@@ -1,0 +1,12 @@
+.env
+*.env
+.git
+__pycache__/
+*.py[cod]
+*.so
+venv/
+.venv/
+chroma_db/
+*.pdf
+*.log
+Dockerfile*

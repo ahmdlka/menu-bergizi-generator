@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Card, CardBody } from "../ui/Card";
-import { Input, Field } from "../ui/Input";
+import { Input, Field, Select } from "../ui/Input";
 import type { GenerateRequest } from "../../lib/api";
 
 interface Props {
@@ -12,7 +12,7 @@ interface Props {
 }
 
 export function FastForm({ onBack, onSubmit, submitting }: Props) {
-  const [durationDays, setDurationDays] = useState(7);
+  const [durationDays, setDurationDays] = useState(1);
   const [budget, setBudget] = useState<number | "">("");
 
   function submit(e: React.FormEvent) {
@@ -45,17 +45,17 @@ export function FastForm({ onBack, onSubmit, submitting }: Props) {
         </div>
 
         <form onSubmit={submit} className="grid grid-cols-2 gap-4">
-          <Field label="Durasi (hari)" hint="1–30 hari">
-            <Input
-              type="number"
-              min={1}
-              max={30}
-              value={durationDays}
-              onChange={(e) =>
-                setDurationDays(Math.min(30, Math.max(1, Number(e.target.value) || 1)))
-              }
-            />
+          <Field label="Durasi (hari)" hint="Pilih 1, 2, atau 3 hari">
+            <Select
+              value={String(durationDays)}
+              onChange={(e) => setDurationDays(Number(e.target.value))}
+            >
+              <option value="1">1 hari</option>
+              <option value="2">2 hari</option>
+              <option value="3">3 hari</option>
+            </Select>
           </Field>
+
           <Field label="Budget / hari (Rp)" hint="Opsional, override profil">
             <Input
               type="number"
